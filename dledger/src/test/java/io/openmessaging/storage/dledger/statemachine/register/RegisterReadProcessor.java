@@ -29,10 +29,8 @@ public class RegisterReadProcessor extends UserDefineProcessor<RegisterReadReque
 
     private Integer requestTypeCode;
 
-    private final DLedgerServer server;
-
     public RegisterReadProcessor(DLedgerServer server) {
-        this.server = server;
+        super(server);
         RegisterReadRequest registerReadRequest = new RegisterReadRequest(0);
         this.requestTypeCode = registerReadRequest.getRequestTypeCode();
     }
@@ -46,7 +44,7 @@ public class RegisterReadProcessor extends UserDefineProcessor<RegisterReadReque
             @Override
             public void done(Status status) {
                 if (status.isOk()) {
-                    RegisterStateMachine registerStateMachine = (RegisterStateMachine) RegisterReadProcessor.this.server.getStateMachine();
+                    RegisterStateMachine registerStateMachine = (RegisterStateMachine) dLedgerServer.getStateMachine();
                     Integer value = registerStateMachine.getValue(key);
                     response.setValue(value);
                     future.complete(response);
@@ -56,7 +54,7 @@ public class RegisterReadProcessor extends UserDefineProcessor<RegisterReadReque
                 }
             }
         };
-        RegisterReadProcessor.this.server.handleRead(ReadMode.RAFT_LOG_READ, closure);
+        dLedgerServer.handleRead(ReadMode.RAFT_LOG_READ, closure);
         return future;
     }
 
