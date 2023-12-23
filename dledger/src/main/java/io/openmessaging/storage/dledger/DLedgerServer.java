@@ -16,8 +16,19 @@
 
 package io.openmessaging.storage.dledger;
 
+import io.openmessaging.storage.dledger.common.AppendFuture;
+import io.openmessaging.storage.dledger.common.BatchAppendFuture;
+import io.openmessaging.storage.dledger.common.Closure;
+import io.openmessaging.storage.dledger.common.NamedThreadFactory;
+import io.openmessaging.storage.dledger.common.ReadClosure;
+import io.openmessaging.storage.dledger.common.ReadMode;
+import io.openmessaging.storage.dledger.common.Status;
+import io.openmessaging.storage.dledger.common.WriteClosure;
+import io.openmessaging.storage.dledger.common.WriteTask;
 import io.openmessaging.storage.dledger.entry.DLedgerEntry;
+import io.openmessaging.storage.dledger.entry.DLedgerEntryType;
 import io.openmessaging.storage.dledger.exception.DLedgerException;
+import io.openmessaging.storage.dledger.metrics.DLedgerMetricsManager;
 import io.openmessaging.storage.dledger.protocol.AppendEntryRequest;
 import io.openmessaging.storage.dledger.protocol.AppendEntryResponse;
 import io.openmessaging.storage.dledger.protocol.BatchAppendEntryRequest;
@@ -26,6 +37,8 @@ import io.openmessaging.storage.dledger.protocol.GetEntriesRequest;
 import io.openmessaging.storage.dledger.protocol.GetEntriesResponse;
 import io.openmessaging.storage.dledger.protocol.HeartBeatRequest;
 import io.openmessaging.storage.dledger.protocol.HeartBeatResponse;
+import io.openmessaging.storage.dledger.protocol.InstallSnapshotRequest;
+import io.openmessaging.storage.dledger.protocol.InstallSnapshotResponse;
 import io.openmessaging.storage.dledger.protocol.LeadershipTransferRequest;
 import io.openmessaging.storage.dledger.protocol.LeadershipTransferResponse;
 import io.openmessaging.storage.dledger.protocol.MetadataRequest;
@@ -38,6 +51,7 @@ import io.openmessaging.storage.dledger.protocol.VoteRequest;
 import io.openmessaging.storage.dledger.protocol.VoteResponse;
 import io.openmessaging.storage.dledger.protocol.userdefine.UserDefineProcessor;
 import io.openmessaging.storage.dledger.snapshot.SnapshotManager;
+import io.openmessaging.storage.dledger.statemachine.NoOpStatemachine;
 import io.openmessaging.storage.dledger.statemachine.StateMachine;
 import io.openmessaging.storage.dledger.statemachine.StateMachineCaller;
 import io.openmessaging.storage.dledger.store.DLedgerMemoryStore;
@@ -46,6 +60,8 @@ import io.openmessaging.storage.dledger.store.file.DLedgerMmapFileStore;
 import io.openmessaging.storage.dledger.utils.DLedgerUtils;
 import io.openmessaging.storage.dledger.utils.PreConditions;
 
+import io.opentelemetry.api.common.Attributes;
+import io.opentelemetry.api.common.AttributesBuilder;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -53,11 +69,13 @@ import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.CompletableFuture;
 
+import org.apache.commons.lang3.time.StopWatch;
 import org.apache.rocketmq.remoting.ChannelEventListener;
 import org.apache.rocketmq.remoting.netty.NettyClientConfig;
 import org.apache.rocketmq.remoting.netty.NettyRemotingClient;
@@ -65,6 +83,8 @@ import org.apache.rocketmq.remoting.netty.NettyRemotingServer;
 import org.apache.rocketmq.remoting.netty.NettyServerConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import static io.openmessaging.storage.dledger.metrics.DLedgerMetricsConstant.LABEL_READ_MODE;
 
 public class DLedgerServer extends AbstractDLedgerServer {
 
@@ -81,16 +101,19 @@ public class DLedgerServer extends AbstractDLedgerServer {
     private final DLedgerLeaderElector dLedgerLeaderElector;
 
     private final ScheduledExecutorService executorService;
-    private Optional<StateMachineCaller> fsmCaller;
+
+    private FastAdvanceCommitIndexService fastAdvanceCommitIndexService;
+
+    private StateMachineCaller fsmCaller;
 
     private volatile boolean isStarted = false;
 
     public DLedgerServer(DLedgerConfig dLedgerConfig) {
-        this(dLedgerConfig, null, null, null);
+        this(dLedgerConfig, null, null);
     }
 
     public DLedgerServer(DLedgerConfig dLedgerConfig, NettyServerConfig nettyServerConfig) {
-        this(dLedgerConfig, nettyServerConfig, null, null);
+        this(dLedgerConfig, nettyServerConfig, null);
     }
 
     public DLedgerServer(DLedgerConfig dLedgerConfig, NettyServerConfig nettyServerConfig,
@@ -100,6 +123,11 @@ public class DLedgerServer extends AbstractDLedgerServer {
 
     public DLedgerServer(DLedgerConfig dLedgerConfig, NettyServerConfig nettyServerConfig,
         NettyClientConfig nettyClientConfig, ChannelEventListener channelEventListener) {
+        this(dLedgerConfig, nettyServerConfig, nettyClientConfig, channelEventListener, null);
+    }
+
+    public DLedgerServer(DLedgerConfig dLedgerConfig, NettyServerConfig nettyServerConfig,
+        NettyClientConfig nettyClientConfig, ChannelEventListener channelEventListener, StateMachine stateMachine) {
         dLedgerConfig.init();
         this.dLedgerConfig = dLedgerConfig;
         this.memberState = new MemberState(dLedgerConfig);
@@ -109,7 +137,14 @@ public class DLedgerServer extends AbstractDLedgerServer {
         this.dLedgerEntryPusher = new DLedgerEntryPusher(dLedgerConfig, memberState, dLedgerStore, dLedgerRpcService);
         this.dLedgerLeaderElector = new DLedgerLeaderElector(dLedgerConfig, memberState, dLedgerRpcService);
         this.executorService = Executors.newSingleThreadScheduledExecutor(new NamedThreadFactory(null, "DLedgerServer-ScheduledExecutor", true));
-        this.fsmCaller = Optional.empty();
+        if (stateMachine == null) {
+            stateMachine = new NoOpStatemachine();
+        }
+        this.fsmCaller = new StateMachineCaller(this.dLedgerStore, stateMachine, this.dLedgerEntryPusher);
+        if (this.dLedgerConfig.isEnableFastAdvanceCommitIndex()) {
+            this.fastAdvanceCommitIndexService = new FastAdvanceCommitIndexService();
+            this.dLedgerLeaderElector.addRoleChangeHandler(this.fastAdvanceCommitIndexService);
+        }
     }
 
     /**
@@ -132,7 +167,11 @@ public class DLedgerServer extends AbstractDLedgerServer {
             t.setName("DLedgerServer-ScheduledExecutor");
             return t;
         });
-        this.fsmCaller = Optional.empty();
+        this.fsmCaller = new StateMachineCaller(this.dLedgerStore, new NoOpStatemachine(), this.dLedgerEntryPusher);
+        if (this.dLedgerConfig.isEnableFastAdvanceCommitIndex()) {
+            this.fastAdvanceCommitIndexService = new FastAdvanceCommitIndexService();
+            this.dLedgerLeaderElector.addRoleChangeHandler(this.fastAdvanceCommitIndexService);
+        }
     }
 
     /**
@@ -141,10 +180,15 @@ public class DLedgerServer extends AbstractDLedgerServer {
     public synchronized void startup() {
         if (!isStarted) {
             this.dLedgerStore.startup();
-            this.fsmCaller.ifPresent(x -> {
-                // Start state machine caller and load existing snapshots for data recovery
-                x.start();
-                Optional.ofNullable(x.getSnapshotManager()).ifPresent(sm -> sm.loadSnapshot());
+            this.fsmCaller.start();
+            Optional.ofNullable(this.fsmCaller.getSnapshotManager()).ifPresent(x -> {
+                try {
+                    x.loadSnapshot().get();
+                } catch (InterruptedException e) {
+                    throw new RuntimeException(e);
+                } catch (ExecutionException e) {
+                    throw new RuntimeException(e);
+                }
             });
             if (RpcServiceMode.EXCLUSIVE.equals(this.rpcServiceMode)) {
                 this.dLedgerRpcService.startup();
@@ -168,7 +212,7 @@ public class DLedgerServer extends AbstractDLedgerServer {
             }
             this.dLedgerStore.shutdown();
             executorService.shutdown();
-            this.fsmCaller.ifPresent(StateMachineCaller::shutdown);
+            this.fsmCaller.shutdown();
             isStarted = false;
             LOGGER.info("server shutdown");
         }
@@ -194,9 +238,8 @@ public class DLedgerServer extends AbstractDLedgerServer {
         if (this.dLedgerConfig.isEnableSnapshot()) {
             fsmCaller.registerSnapshotManager(new SnapshotManager(this));
         }
-        this.fsmCaller = Optional.of(fsmCaller);
+        this.fsmCaller = fsmCaller;
         // Register state machine caller to entry pusher
-        this.dLedgerEntryPusher.registerStateMachine(this.fsmCaller);
         if (dLedgerStore instanceof DLedgerMmapFileStore) {
             ((DLedgerMmapFileStore) dLedgerStore).setEnableCleanSpaceService(false);
         }
@@ -209,7 +252,7 @@ public class DLedgerServer extends AbstractDLedgerServer {
     }
 
     public StateMachine getStateMachine() {
-        return this.fsmCaller.map(StateMachineCaller::getStateMachine).orElse(null);
+        return this.fsmCaller.getStateMachine();
     }
 
     @Override
@@ -248,10 +291,6 @@ public class DLedgerServer extends AbstractDLedgerServer {
     /**
      * Handle the append requests: 1.append the entry to local store 2.submit the future to entry pusher and wait the
      * quorum ack 3.if the pending requests are full, then reject it immediately
-     *
-     * @param request
-     * @return
-     * @throws IOException
      */
     @Override
     public CompletableFuture<AppendEntryResponse> handleAppend(AppendEntryRequest request) throws IOException {
@@ -301,10 +340,13 @@ public class DLedgerServer extends AbstractDLedgerServer {
             return AppendFuture.newCompletedFuture(-1, null);
         }
         AppendFuture<AppendEntryResponse> future;
+        StopWatch watch = StopWatch.createStarted();
         DLedgerEntry entry = new DLedgerEntry();
+        long totalBytes = 0;
         if (bodies.size() > 1) {
             long[] positions = new long[bodies.size()];
             for (int i = 0; i < bodies.size(); i++) {
+                totalBytes += bodies.get(i).length;
                 DLedgerEntry dLedgerEntry = new DLedgerEntry();
                 dLedgerEntry.setBody(bodies.get(i));
                 entry = dLedgerStore.appendAsLeader(dLedgerEntry);
@@ -314,15 +356,26 @@ public class DLedgerServer extends AbstractDLedgerServer {
             future = new BatchAppendFuture<>(positions);
         } else {
             DLedgerEntry dLedgerEntry = new DLedgerEntry();
+            totalBytes += bodies.get(0).length;
             dLedgerEntry.setBody(bodies.get(0));
             entry = dLedgerStore.appendAsLeader(dLedgerEntry);
             future = new AppendFuture<>();
         }
         final DLedgerEntry finalResEntry = entry;
         final AppendFuture<AppendEntryResponse> finalFuture = future;
+        final long totalBytesFinal = totalBytes;
+        finalFuture.handle((r, e) -> {
+            if (e == null && r.getCode() == DLedgerResponseCode.SUCCESS.getCode()) {
+                Attributes attributes = DLedgerMetricsManager.newAttributesBuilder().build();
+                DLedgerMetricsManager.appendEntryLatency.record(watch.getTime(TimeUnit.MICROSECONDS), attributes);
+                DLedgerMetricsManager.appendEntryBatchCount.record(bodies.size(), attributes);
+                DLedgerMetricsManager.appendEntryBatchBytes.record(totalBytesFinal, attributes);
+            }
+            return r;
+        });
         Closure closure = new Closure() {
             @Override
-            void done(Status status) {
+            public void done(Status status) {
                 AppendEntryResponse response = new AppendEntryResponse();
                 response.setGroup(DLedgerServer.this.memberState.getGroup());
                 response.setTerm(DLedgerServer.this.memberState.currTerm());
@@ -362,17 +415,43 @@ public class DLedgerServer extends AbstractDLedgerServer {
         }
     }
 
+    @Override
+    public void handleWrite(WriteTask task, WriteClosure closure) {
+        PreConditions.check(memberState.isLeader(), DLedgerResponseCode.NOT_LEADER);
+        PreConditions.check(memberState.getTransferee() == null, DLedgerResponseCode.LEADER_TRANSFERRING);
+        long currTerm = memberState.currTerm();
+        if (dLedgerEntryPusher.isPendingFull(currTerm)) {
+            closure.done(Status.error(DLedgerResponseCode.LEADER_PENDING_FULL));
+            return;
+        }
+        DLedgerEntry dLedgerEntry = new DLedgerEntry();
+        dLedgerEntry.setBody(task.getBody());
+        DLedgerEntry entry = dLedgerStore.appendAsLeader(dLedgerEntry);
+        dLedgerEntryPusher.appendClosure(closure, entry.getTerm(), entry.getIndex());
+    }
+
     private void dealUnsafeRead(ReadClosure closure) throws DLedgerException {
         closure.done(Status.ok());
     }
 
     private void dealRaftLogRead(ReadClosure closure) throws DLedgerException {
         PreConditions.check(memberState.isLeader(), DLedgerResponseCode.NOT_LEADER);
+        StopWatch watch = StopWatch.createStarted();
         // append an empty raft log, call closure when this raft log is applied
-        DLedgerEntry emptyEntry = new DLedgerEntry();
-        emptyEntry.setBody(new byte[0]);
+        DLedgerEntry emptyEntry = new DLedgerEntry(DLedgerEntryType.NOOP);
         DLedgerEntry dLedgerEntry = dLedgerStore.appendAsLeader(emptyEntry);
-        dLedgerEntryPusher.appendClosure(closure, dLedgerEntry.getTerm(), dLedgerEntry.getIndex());
+        Closure realClosure = new Closure() {
+            @Override
+            public void done(Status status) {
+                if (status.isOk()) {
+                    AttributesBuilder attributesBuilder = DLedgerMetricsManager.newAttributesBuilder();
+                    attributesBuilder.put(LABEL_READ_MODE, ReadMode.RAFT_LOG_READ.name().toLowerCase());
+                    DLedgerMetricsManager.readLatency.record(watch.getTime(TimeUnit.MICROSECONDS), attributesBuilder.build());
+                }
+                closure.done(status);
+            }
+        };
+        dLedgerEntryPusher.appendClosure(realClosure, dLedgerEntry.getTerm(), dLedgerEntry.getIndex());
     }
 
     private void dealReadIndexRead(ReadClosure closure) throws DLedgerException {
@@ -446,7 +525,23 @@ public class DLedgerServer extends AbstractDLedgerServer {
             response.setLeaderId(memberState.getLeaderId());
             return CompletableFuture.completedFuture(response);
         }
+    }
 
+    @Override
+    public CompletableFuture<InstallSnapshotResponse> handleInstallSnapshot(
+        InstallSnapshotRequest request) throws Exception {
+        try {
+            PreConditions.check(memberState.getSelfId().equals(request.getRemoteId()), DLedgerResponseCode.UNKNOWN_MEMBER, "%s != %s", request.getRemoteId(), memberState.getSelfId());
+            PreConditions.check(memberState.getGroup().equals(request.getGroup()), DLedgerResponseCode.UNKNOWN_GROUP, "%s != %s", request.getGroup(), memberState.getGroup());
+            return dLedgerEntryPusher.handleInstallSnapshot(request);
+        } catch (DLedgerException e) {
+            LOGGER.error("[{}][HandleInstallSnapshot] failed", memberState.getSelfId(), e);
+            InstallSnapshotResponse response = new InstallSnapshotResponse();
+            response.copyBaseInfo(request);
+            response.setCode(e.getCode().getCode());
+            response.setLeaderId(memberState.getLeaderId());
+            return CompletableFuture.completedFuture(response);
+        }
     }
 
     @Override
@@ -637,7 +732,7 @@ public class DLedgerServer extends AbstractDLedgerServer {
     }
 
     public StateMachineCaller getFsmCaller() {
-        return fsmCaller.orElseThrow(NullPointerException::new);
+        return fsmCaller;
     }
 
     public boolean isLeader() {
@@ -650,6 +745,35 @@ public class DLedgerServer extends AbstractDLedgerServer {
     enum RpcServiceMode {
         EXCLUSIVE,
         SHARED
+    }
+
+    private class FastAdvanceCommitIndexService implements DLedgerLeaderElector.RoleChangeHandler {
+
+        @Override
+        public void handle(long term, MemberState.Role role) {
+            if (role == MemberState.Role.LEADER && term == memberState.currTerm() && memberState.getCommittedIndex() < memberState.getLedgerEndIndex()) {
+                DLedgerServer.this.handleRead(ReadMode.RAFT_LOG_READ, new ReadClosure() {
+                    @Override
+                    public void done(Status status) {
+                        if (status != Status.ok()) {
+                            LOGGER.error("[FastAdvanceCommitIndexService-{}] term: {} advance failed, status={}", term, memberState.getSelfId(), status);
+                        } else {
+                            LOGGER.info("[FastAdvanceCommitIndexService-{}] term: {} advance ok", term, memberState.getSelfId());
+                        }
+                    }
+                });
+            }
+        }
+
+        @Override
+        public void startup() {
+
+        }
+
+        @Override
+        public void shutdown() {
+
+        }
     }
 
 }

@@ -17,9 +17,8 @@
 package io.openmessaging.storage.dledger.example.register.protocol;
 
 import io.openmessaging.storage.dledger.DLedgerServer;
-import io.openmessaging.storage.dledger.ReadClosure;
-import io.openmessaging.storage.dledger.ReadMode;
-import io.openmessaging.storage.dledger.Status;
+import io.openmessaging.storage.dledger.common.ReadClosure;
+import io.openmessaging.storage.dledger.common.Status;
 import io.openmessaging.storage.dledger.protocol.userdefine.UserDefineProcessor;
 import io.openmessaging.storage.dledger.example.register.RegisterStateMachine;
 import java.util.concurrent.CompletableFuture;
@@ -49,7 +48,7 @@ public class RegisterReadProcessor extends UserDefineProcessor<RegisterReadReque
                 }
             }
         };
-        dLedgerServer.handleRead(ReadMode.RAFT_LOG_READ, closure);
+        dLedgerServer.handleRead(registerReadRequest.getReadMode(), closure);
         return future;
     }
 

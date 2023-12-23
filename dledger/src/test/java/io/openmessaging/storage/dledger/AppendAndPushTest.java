@@ -16,11 +16,14 @@
 
 package io.openmessaging.storage.dledger;
 
+import io.openmessaging.storage.dledger.common.AppendFuture;
+import io.openmessaging.storage.dledger.common.BatchAppendFuture;
 import io.openmessaging.storage.dledger.entry.DLedgerEntry;
 import io.openmessaging.storage.dledger.protocol.AppendEntryRequest;
 import io.openmessaging.storage.dledger.protocol.AppendEntryResponse;
 import io.openmessaging.storage.dledger.protocol.BatchAppendEntryRequest;
 import io.openmessaging.storage.dledger.protocol.DLedgerResponseCode;
+import io.openmessaging.storage.dledger.util.FileTestUtil;
 import io.openmessaging.storage.dledger.utils.DLedgerUtils;
 import java.util.ArrayList;
 import java.util.LinkedList;
@@ -30,6 +33,8 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+
+import org.awaitility.core.AssertionCondition;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
@@ -38,6 +43,8 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
 
 public class AppendAndPushTest extends ServerTestHarness {
+
+    public static final String STORE_PATH = FileTestUtil.createTestDir("appendAndPushTest");
 
     @Test
     public void testPushCommittedIndex() throws Exception {
@@ -56,14 +63,14 @@ public class AppendAndPushTest extends ServerTestHarness {
             futures.add(future);
         }
         Assertions.assertEquals(9, dLedgerServer0.getDLedgerStore().getLedgerEndIndex());
-        Assertions.assertEquals(-1, dLedgerServer0.getDLedgerStore().getCommittedIndex());
+        Assertions.assertEquals(-1, dLedgerServer0.getMemberState().getCommittedIndex());
         DLedgerServer dLedgerServer1 = launchServer(group, peers, "n1", "n0", DLedgerConfig.FILE);
         long start = System.currentTimeMillis();
-        while (DLedgerUtils.elapsed(start) < 3000 && dLedgerServer1.getDLedgerStore().getCommittedIndex() != 9) {
+        while (DLedgerUtils.elapsed(start) < 3000 && dLedgerServer1.getMemberState().getCommittedIndex() != 9) {
             DLedgerUtils.sleep(100);
         }
-        Assertions.assertEquals(9, dLedgerServer0.getDLedgerStore().getCommittedIndex());
-        Assertions.assertEquals(9, dLedgerServer1.getDLedgerStore().getCommittedIndex());
+        Assertions.assertEquals(9, dLedgerServer0.getMemberState().getCommittedIndex());
+        Assertions.assertEquals(9, dLedgerServer1.getMemberState().getCommittedIndex());
     }
 
     @Test
@@ -83,7 +90,7 @@ public class AppendAndPushTest extends ServerTestHarness {
             futures.add(future);
         }
         Assertions.assertEquals(9, dLedgerServer0.getDLedgerStore().getLedgerEndIndex());
-        Thread.sleep(dLedgerServer0.getDLedgerConfig().getMaxWaitAckTimeMs() + 100);
+        Thread.sleep(dLedgerServer0.getDLedgerConfig().getMaxWaitAckTimeMs() + 1000);
         for (int i = 0; i < futures.size(); i++) {
             CompletableFuture<AppendEntryResponse> future = futures.get(i);
             Assertions.assertTrue(future.isDone());
@@ -91,7 +98,7 @@ public class AppendAndPushTest extends ServerTestHarness {
         }
 
         boolean hasWait = false;
-        for (int i = 0; i < dLedgerServer0.getDLedgerConfig().getMaxPendingRequestsNum(); i++) {
+        for (int i = 0; i < dLedgerServer0.getDLedgerConfig().getMaxPendingRequestsNum()+2; i++) {
             AppendEntryRequest appendEntryRequest = new AppendEntryRequest();
             appendEntryRequest.setGroup(group);
             appendEntryRequest.setRemoteId(dLedgerServer0.getMemberState().getSelfId());
@@ -267,5 +274,10 @@ public class AppendAndPushTest extends ServerTestHarness {
         Assertions.assertEquals(-1, dLedgerServer1.getDLedgerStore().getLedgerBeforeBeginIndex());
         Assertions.assertEquals(count - 1, dLedgerServer1.getDLedgerStore().getLedgerEndIndex());
         Thread.sleep(1000);
+    }
+
+    @Override
+    protected String getBaseDir() {
+        return STORE_PATH;
     }
 }

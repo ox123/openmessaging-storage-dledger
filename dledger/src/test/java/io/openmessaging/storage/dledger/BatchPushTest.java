@@ -17,11 +17,13 @@
 package io.openmessaging.storage.dledger;
 
 import io.openmessaging.storage.dledger.client.DLedgerClient;
+import io.openmessaging.storage.dledger.common.AppendFuture;
 import io.openmessaging.storage.dledger.entry.DLedgerEntry;
 import io.openmessaging.storage.dledger.protocol.AppendEntryRequest;
 import io.openmessaging.storage.dledger.protocol.AppendEntryResponse;
 import io.openmessaging.storage.dledger.protocol.DLedgerResponseCode;
 import io.openmessaging.storage.dledger.protocol.GetEntriesResponse;
+import io.openmessaging.storage.dledger.util.FileTestUtil;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -36,7 +38,14 @@ import org.mockito.Mockito;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
 
-public class BatchPushTest extends ServerTestHarness{
+public class BatchPushTest extends ServerTestHarness {
+
+    public static final String STORE_PATH = FileTestUtil.createTestDir("BatchPushTest");
+
+    @Override
+    protected String getBaseDir() {
+        return STORE_PATH;
+    }
     @Test
     public void testBatchPushWithOneByOneRequests() throws Exception {
         String group = UUID.randomUUID().toString();
@@ -117,7 +126,7 @@ public class BatchPushTest extends ServerTestHarness{
             futures.add(future);
         }
         Assertions.assertEquals(9, dLedgerServer0.getDLedgerStore().getLedgerEndIndex());
-        Thread.sleep(dLedgerServer0.getDLedgerConfig().getMaxWaitAckTimeMs() + 100);
+        Thread.sleep(dLedgerServer0.getDLedgerConfig().getMaxWaitAckTimeMs() + 1000);
         for (int i = 0; i < futures.size(); i++) {
             CompletableFuture<AppendEntryResponse> future = futures.get(i);
             Assertions.assertTrue(future.isDone());
@@ -125,7 +134,7 @@ public class BatchPushTest extends ServerTestHarness{
         }
 
         boolean hasWait = false;
-        for (int i = 0; i < dLedgerServer0.getDLedgerConfig().getMaxPendingRequestsNum(); i++) {
+        for (int i = 0; i < dLedgerServer0.getDLedgerConfig().getMaxPendingRequestsNum() + 2; i++) {
             AppendEntryRequest appendEntryRequest = new AppendEntryRequest();
             appendEntryRequest.setGroup(group);
             appendEntryRequest.setRemoteId(dLedgerServer0.getMemberState().getSelfId());

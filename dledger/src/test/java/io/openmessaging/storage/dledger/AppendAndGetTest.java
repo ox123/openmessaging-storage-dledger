@@ -22,6 +22,8 @@ import io.openmessaging.storage.dledger.protocol.AppendEntryRequest;
 import io.openmessaging.storage.dledger.protocol.AppendEntryResponse;
 import io.openmessaging.storage.dledger.protocol.DLedgerResponseCode;
 import io.openmessaging.storage.dledger.protocol.GetEntriesResponse;
+import io.openmessaging.storage.dledger.util.FileTestUtil;
+import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -31,11 +33,13 @@ import org.junit.jupiter.api.Test;
 
 public class AppendAndGetTest extends ServerTestHarness {
 
+    public static final String STORE_PATH = FileTestUtil.createTestDir("AppendAndGetTest");
+
     @Test
     public void testSingleServerInMemory() throws Exception {
         String group = UUID.randomUUID().toString();
         String selfId = "n0";
-        String peers = "n0-localhost:10001";
+        String peers = String.format("n0-localhost:%d", nextPort());
         launchServer(group, peers, selfId, selfId, DLedgerConfig.MEMORY);
         DLedgerClient dLedgerClient = launchClient(group, peers);
         for (long i = 0; i < 10; i++) {
@@ -54,7 +58,7 @@ public class AppendAndGetTest extends ServerTestHarness {
     public void testSingleServerInFile() throws Exception {
         String group = UUID.randomUUID().toString();
         String selfId = "n0";
-        String peers = "n0-localhost:10002";
+        String peers = String.format("n0-localhost:%d", nextPort());
         launchServer(group, peers, selfId, selfId, DLedgerConfig.FILE);
         DLedgerClient dLedgerClient = launchClient(group, peers);
         long expectedPos = 0L;
@@ -102,7 +106,7 @@ public class AppendAndGetTest extends ServerTestHarness {
     @Test
     public void testThreeServerInFile() throws Exception {
         String group = UUID.randomUUID().toString();
-        String peers = "n0-localhost:10006;n1-localhost:10007;n2-localhost:10008";
+        String peers = String.format("n0-localhost:%d;n1-localhost:%d;n2-localhost:%d", nextPort(), nextPort(), nextPort());
         DLedgerServer dLedgerServer0 = launchServer(group, peers, "n0", "n1", DLedgerConfig.FILE);
         DLedgerServer dLedgerServer1 = launchServer(group, peers, "n1", "n1", DLedgerConfig.FILE);
         DLedgerServer dLedgerServer2 = launchServer(group, peers, "n2", "n1", DLedgerConfig.FILE);
@@ -160,5 +164,10 @@ public class AppendAndGetTest extends ServerTestHarness {
             //assert the pos
             Assertions.assertEquals(entry.getPos(), future.get().getPos());
         }
+    }
+
+    @Override
+    protected String getBaseDir() {
+        return STORE_PATH;
     }
 }

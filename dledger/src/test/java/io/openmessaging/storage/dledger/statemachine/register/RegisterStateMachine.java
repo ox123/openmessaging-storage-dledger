@@ -18,13 +18,16 @@ package io.openmessaging.storage.dledger.statemachine.register;
 
 import io.openmessaging.storage.dledger.entry.DLedgerEntry;
 import io.openmessaging.storage.dledger.exception.DLedgerException;
+import io.openmessaging.storage.dledger.snapshot.SnapshotManager;
 import io.openmessaging.storage.dledger.snapshot.SnapshotReader;
 import io.openmessaging.storage.dledger.snapshot.SnapshotWriter;
-import io.openmessaging.storage.dledger.statemachine.CommittedEntryIterator;
+import io.openmessaging.storage.dledger.statemachine.ApplyEntry;
+import io.openmessaging.storage.dledger.statemachine.ApplyEntryIterator;
 import io.openmessaging.storage.dledger.statemachine.RegisterSnapshotFile;
 import io.openmessaging.storage.dledger.statemachine.StateMachine;
 import io.openmessaging.storage.dledger.utils.BytesUtil;
 
+import java.io.File;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -34,11 +37,12 @@ public class RegisterStateMachine implements StateMachine {
     private ConcurrentHashMap<Integer, Integer> register = new ConcurrentHashMap<>();
 
     @Override
-    public void onApply(CommittedEntryIterator iter) {
+    public void onApply(ApplyEntryIterator iter) {
         while (iter.hasNext()) {
-            final DLedgerEntry entry = iter.next();
-            if (entry != null && entry.getBody() != null && entry.getBody().length == 8) {
-                byte[] bytes = entry.getBody();
+            final ApplyEntry entry = iter.next();
+            if (entry != null) {
+                final DLedgerEntry dLedgerEntry = entry.getEntry();
+                byte[] bytes = dLedgerEntry.getBody();
                 int key = BytesUtil.bytesToInt(bytes, 0);
                 int value = BytesUtil.bytesToInt(bytes, 4);
                 register.put(key, value);
@@ -48,13 +52,13 @@ public class RegisterStateMachine implements StateMachine {
 
     @Override
     public boolean onSnapshotSave(SnapshotWriter writer) {
-        RegisterSnapshotFile registerSnapshotFile = new RegisterSnapshotFile(writer.getSnapshotStorePath());
+        RegisterSnapshotFile registerSnapshotFile = new RegisterSnapshotFile(writer.getSnapshotStorePath() + File.separator + SnapshotManager.SNAPSHOT_DATA_FILE);
         return registerSnapshotFile.save(this.register);
     }
 
     @Override
     public boolean onSnapshotLoad(SnapshotReader reader) {
-        RegisterSnapshotFile registerSnapshotFile = new RegisterSnapshotFile(reader.getSnapshotStorePath());
+        RegisterSnapshotFile registerSnapshotFile = new RegisterSnapshotFile(reader.getSnapshotStorePath() + File.separator + SnapshotManager.SNAPSHOT_DATA_FILE);
         try{
             Map<Integer, Integer> register = registerSnapshotFile.load();
             this.register = new ConcurrentHashMap<>(register);

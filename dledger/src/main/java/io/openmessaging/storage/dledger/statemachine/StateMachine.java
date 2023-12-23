@@ -32,12 +32,13 @@ public interface StateMachine {
      *
      * @param iter iterator of committed entry
      */
-    void onApply(final CommittedEntryIterator iter);
+    void onApply(final ApplyEntryIterator iter);
 
     /**
      * User defined snapshot generate function.
      *
      * @param writer snapshot writer
+     * @return true on success
      */
     boolean onSnapshotSave(final SnapshotWriter writer);
 

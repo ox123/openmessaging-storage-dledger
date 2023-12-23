@@ -16,11 +16,15 @@
 
 package io.openmessaging.storage.dledger.protocol.handler;
 
-import io.openmessaging.storage.dledger.ReadClosure;
-import io.openmessaging.storage.dledger.ReadMode;
+import io.openmessaging.storage.dledger.common.ReadClosure;
+import io.openmessaging.storage.dledger.common.ReadMode;
+import io.openmessaging.storage.dledger.common.WriteClosure;
+import io.openmessaging.storage.dledger.common.WriteTask;
 
 public interface DLedgerInnerProtocolHandler {
 
     void handleRead(ReadMode mode, ReadClosure closure);
+
+    void handleWrite(WriteTask task, WriteClosure closure);
 
 }

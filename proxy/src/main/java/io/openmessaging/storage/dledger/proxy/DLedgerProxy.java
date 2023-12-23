@@ -1,4 +1,4 @@
-/*
+/**
  * Copyright 2017-2022 The DLedger Authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,14 +15,16 @@
  */
 package io.openmessaging.storage.dledger.proxy;
 
-import io.openmessaging.storage.dledger.AppendFuture;
+import io.openmessaging.storage.dledger.common.AppendFuture;
 import io.openmessaging.storage.dledger.DLedgerConfig;
 import io.openmessaging.storage.dledger.DLedgerRpcNettyService;
 import io.openmessaging.storage.dledger.DLedgerRpcService;
 import io.openmessaging.storage.dledger.DLedgerServer;
 import io.openmessaging.storage.dledger.AbstractDLedgerServer;
-import io.openmessaging.storage.dledger.ReadClosure;
-import io.openmessaging.storage.dledger.ReadMode;
+import io.openmessaging.storage.dledger.common.ReadClosure;
+import io.openmessaging.storage.dledger.common.ReadMode;
+import io.openmessaging.storage.dledger.common.WriteClosure;
+import io.openmessaging.storage.dledger.common.WriteTask;
 import io.openmessaging.storage.dledger.exception.DLedgerException;
 import io.openmessaging.storage.dledger.protocol.AppendEntryRequest;
 import io.openmessaging.storage.dledger.protocol.AppendEntryResponse;
@@ -31,6 +33,8 @@ import io.openmessaging.storage.dledger.protocol.GetEntriesRequest;
 import io.openmessaging.storage.dledger.protocol.GetEntriesResponse;
 import io.openmessaging.storage.dledger.protocol.HeartBeatRequest;
 import io.openmessaging.storage.dledger.protocol.HeartBeatResponse;
+import io.openmessaging.storage.dledger.protocol.InstallSnapshotRequest;
+import io.openmessaging.storage.dledger.protocol.InstallSnapshotResponse;
 import io.openmessaging.storage.dledger.protocol.LeadershipTransferRequest;
 import io.openmessaging.storage.dledger.protocol.LeadershipTransferResponse;
 import io.openmessaging.storage.dledger.protocol.MetadataRequest;
@@ -247,6 +251,11 @@ public class DLedgerProxy extends AbstractDLedgerServer {
         }
     }
 
+    @Override
+    public CompletableFuture<InstallSnapshotResponse> handleInstallSnapshot(InstallSnapshotRequest request) throws Exception {
+        return null;
+    }
+
     public void startup() {
         this.dLedgerRpcService.startup();
         this.dLedgerManager.startup();
@@ -299,5 +308,10 @@ public class DLedgerProxy extends AbstractDLedgerServer {
     @Override
     public void handleRead(ReadMode mode, ReadClosure closure) {
 
+    }
+
+    @Override
+    public void handleWrite(WriteTask task, WriteClosure closure) {
+        
     }
 }

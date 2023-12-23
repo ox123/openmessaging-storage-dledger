@@ -16,13 +16,18 @@
 
 package io.openmessaging.storage.dledger.example.register.client;
 
+import io.openmessaging.storage.dledger.common.ReadMode;
 import io.openmessaging.storage.dledger.client.DLedgerClient;
 import io.openmessaging.storage.dledger.example.register.protocol.RegisterReadRequest;
 import io.openmessaging.storage.dledger.example.register.protocol.RegisterReadResponse;
 import io.openmessaging.storage.dledger.example.register.protocol.RegisterWriteRequest;
 import io.openmessaging.storage.dledger.example.register.protocol.RegisterWriteResponse;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class RegisterDLedgerClient {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(RegisterDLedgerClient.class);
 
     private final DLedgerClient client;
 
@@ -44,7 +49,21 @@ public class RegisterDLedgerClient {
     }
 
     public RegisterReadResponse read(int key) {
-        RegisterReadRequest request = new RegisterReadRequest(key);
+        return this.read(key, ReadMode.RAFT_LOG_READ);
+    }
+
+    public RegisterReadResponse read(int key, String readModeStr) {
+        ReadMode readMode = ReadMode.RAFT_LOG_READ;
+        try {
+            readMode = ReadMode.valueOf(readModeStr);
+        } catch (Exception ignore) {
+            LOGGER.error("Error readMode string: {}, use default readMode: ", readModeStr, ReadMode.RAFT_LOG_READ);
+        }
+        return this.read(key, readMode);
+    }
+
+    public RegisterReadResponse read(int key, ReadMode readMode) {
+        RegisterReadRequest request = new RegisterReadRequest(key, readMode);
         return client.invokeUserDefineRequest(request, RegisterReadResponse.class, true);
     }
 

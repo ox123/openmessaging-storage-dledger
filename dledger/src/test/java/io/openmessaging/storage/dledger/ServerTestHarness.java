@@ -24,12 +24,14 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
 public class ServerTestHarness extends ServerTestBase {
-
+    protected String getBaseDir() {
+        return FileTestUtil.TEST_BASE;
+    }
     protected synchronized DLedgerServer launchServer(String group, String peers, String selfId) {
         DLedgerConfig config = new DLedgerConfig();
-        config.setStoreBaseDir(FileTestUtil.TEST_BASE + File.separator + group);
+        config.setStoreBaseDir(getBaseDir() + File.separator + group);
         config.group(group).selfId(selfId).peers(peers);
-        config.setStoreType(DLedgerConfig.MEMORY);
+        config.setStoreType(DLedgerConfig.FILE);
         DLedgerServer dLedgerServer = new DLedgerServer(config);
         dLedgerServer.startup();
         bases.add(config.getDefaultPath());
@@ -38,11 +40,17 @@ public class ServerTestHarness extends ServerTestBase {
 
     protected synchronized DLedgerServer launchServer(String group, String peers, String selfId,
         String preferredLeaderId) {
+        return launchServer(group, peers, selfId, preferredLeaderId, false);
+    }
+
+    protected synchronized DLedgerServer launchServer(String group, String peers, String selfId,
+        String preferredLeaderId, boolean enbaleFastAdvanceCommitIndex) {
         DLedgerConfig config = new DLedgerConfig();
-        config.setStoreBaseDir(FileTestUtil.TEST_BASE + File.separator + group);
+        config.setStoreBaseDir(getBaseDir() + File.separator + group);
         config.group(group).selfId(selfId).peers(peers);
-        config.setStoreType(DLedgerConfig.MEMORY);
+        config.setStoreType(DLedgerConfig.FILE);
         config.setPreferredLeaderId(preferredLeaderId);
+        config.setEnableFastAdvanceCommitIndex(enbaleFastAdvanceCommitIndex);
         DLedgerServer dLedgerServer = new DLedgerServer(config);
         dLedgerServer.startup();
         bases.add(config.getDefaultPath());
@@ -53,12 +61,13 @@ public class ServerTestHarness extends ServerTestBase {
         String storeType) {
         DLedgerConfig config = new DLedgerConfig();
         config.group(group).selfId(selfId).peers(peers);
-        config.setStoreBaseDir(FileTestUtil.TEST_BASE + File.separator + group);
+        config.setStoreBaseDir(getBaseDir() + File.separator + group);
         config.setStoreType(storeType);
         config.setMappedFileSizeForEntryData(10 * 1024 * 1024);
         config.setEnableLeaderElector(false);
         config.setEnableDiskForceClean(false);
         config.setDiskSpaceRatioToForceClean(0.90f);
+        config.setMaxPendingRequestsNum(1000);
         DLedgerServer dLedgerServer = new DLedgerServer(config);
         MemberState memberState = dLedgerServer.getMemberState();
         memberState.setCurrTermForTest(0);
@@ -73,6 +82,7 @@ public class ServerTestHarness extends ServerTestBase {
         dLedgerServer.startup();
         return dLedgerServer;
     }
+
 
     protected DLedgerServer launchServerWithStateMachineDisableSnapshot(String group, String peers,
         String selfIf, String leaderId, String storeType, int mappedFileSizeForEntryData, StateMachine stateMachine) {
@@ -92,7 +102,7 @@ public class ServerTestHarness extends ServerTestBase {
         StateMachine stateMachine) {
         DLedgerConfig config = new DLedgerConfig();
         config.group(group).selfId(selfId).peers(peers);
-        config.setStoreBaseDir(FileTestUtil.TEST_BASE + File.separator + group);
+        config.setStoreBaseDir(getBaseDir() + File.separator + group);
         config.setStoreType(storeType);
         config.setEnableSnapshot(enableSnapshot);
         config.setSnapshotThreshold(snapshotThreshold);
@@ -120,14 +130,14 @@ public class ServerTestHarness extends ServerTestBase {
         String leaderId, String storeType) {
         DLedgerConfig config = new DLedgerConfig();
         config.group(group).selfId(selfId).peers(peers);
-        config.setStoreBaseDir(FileTestUtil.TEST_BASE + File.separator + group);
+        config.setStoreBaseDir(getBaseDir() + File.separator + group);
         config.setStoreType(storeType);
         config.setMappedFileSizeForEntryData(10 * 1024 * 1024);
         config.setEnableLeaderElector(false);
         config.setEnableDiskForceClean(false);
         config.setDiskSpaceRatioToForceClean(0.90f);
-        config.setEnableBatchPush(true);
-        config.setMaxBatchPushSize(300);
+        config.setEnableBatchAppend(true);
+        config.setMaxBatchAppendSize(300);
         DLedgerServer dLedgerServer = new DLedgerServer(config);
         MemberState memberState = dLedgerServer.getMemberState();
         memberState.setCurrTermForTest(0);

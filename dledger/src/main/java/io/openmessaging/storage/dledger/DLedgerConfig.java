@@ -16,6 +16,8 @@
 
 package io.openmessaging.storage.dledger;
 
+import io.openmessaging.storage.dledger.metrics.MetricsExporterType;
+import io.openmessaging.storage.dledger.snapshot.SnapshotEntryResetStrategy;
 import io.openmessaging.storage.dledger.store.file.DLedgerMmapFileStore;
 
 import io.openmessaging.storage.dledger.utils.DLedgerUtils;
@@ -86,15 +88,48 @@ public class DLedgerConfig {
     private int minTakeLeadershipVoteIntervalMs = 30;
     private int maxTakeLeadershipVoteIntervalMs = 100;
 
-    private boolean isEnableBatchPush = false;
-    private int maxBatchPushSize = 4 * 1024;
+    private boolean isEnableBatchAppend = false;
+
+    // max size in bytes for each append request
+    private int maxBatchAppendSize = 4 * 1024;
 
     private long leadershipTransferWaitTimeout = 1000;
 
     private boolean enableSnapshot = false;
 
+    private SnapshotEntryResetStrategy snapshotEntryResetStrategy = SnapshotEntryResetStrategy.RESET_ALL_SYNC;
+
     private int snapshotThreshold = 1000;
+
+    private int resetSnapshotEntriesDelayTime = 5 * 1000;
+
+    /**
+     * reset snapshot entries but keep last entries num.
+     * .e.g 10, when we load from snapshot which lastIncludedIndex = 100, we will delete the entries in (..., 90]
+     */
+    private int resetSnapshotEntriesButKeepLastEntriesNum = 10;
     private int maxSnapshotReservedNum = 3;
+
+    // max interval in ms for each append request
+    private int maxBatchAppendIntervalMs = 1000;
+
+    /**
+     * When node change from candidate to leader, it maybe always keep the old commit index although this index's entry has been
+     * replicated to more than half of the nodes (it will keep until a new entry is appended in current term).
+     * The reason why this scenario happens is that leader can't commit the entries which are belong to the previous term.
+     */
+    private boolean enableFastAdvanceCommitIndex = false;
+
+    private MetricsExporterType metricsExporterType = MetricsExporterType.DISABLE;
+
+    private String metricsGrpcExporterTarget = "";
+    private String metricsGrpcExporterHeader = "";
+    private long metricGrpcExporterTimeOutInMills = 3 * 1000;
+    private long metricGrpcExporterIntervalInMills = 60 * 1000;
+    private long metricLoggingExporterIntervalInMills = 10 * 1000;
+
+    private int metricsPromExporterPort = 5557;
+    private String metricsPromExporterHost = "";
 
     public String getDefaultPath() {
         return storeBaseDir + File.separator + "dledger-" + selfId;
@@ -394,20 +429,20 @@ public class DLedgerConfig {
         this.maxTakeLeadershipVoteIntervalMs = maxTakeLeadershipVoteIntervalMs;
     }
 
-    public boolean isEnableBatchPush() {
-        return isEnableBatchPush;
+    public boolean isEnableBatchAppend() {
+        return isEnableBatchAppend;
     }
 
-    public void setEnableBatchPush(boolean enableBatchPush) {
-        isEnableBatchPush = enableBatchPush;
+    public void setEnableBatchAppend(boolean enableBatchAppend) {
+        isEnableBatchAppend = enableBatchAppend;
     }
 
-    public int getMaxBatchPushSize() {
-        return maxBatchPushSize;
+    public int getMaxBatchAppendSize() {
+        return maxBatchAppendSize;
     }
 
-    public void setMaxBatchPushSize(int maxBatchPushSize) {
-        this.maxBatchPushSize = maxBatchPushSize;
+    public void setMaxBatchAppendSize(int maxBatchAppendSize) {
+        this.maxBatchAppendSize = maxBatchAppendSize;
     }
 
     public long getLeadershipTransferWaitTimeout() {
@@ -494,5 +529,110 @@ public class DLedgerConfig {
 
     public void setEnableSnapshot(boolean enableSnapshot) {
         this.enableSnapshot = enableSnapshot;
+    }
+
+    public int getMaxBatchAppendIntervalMs() {
+        return maxBatchAppendIntervalMs;
+    }
+
+    public SnapshotEntryResetStrategy getSnapshotEntryResetStrategy() {
+        return snapshotEntryResetStrategy;
+    }
+
+    public void setSnapshotEntryResetStrategy(
+        SnapshotEntryResetStrategy snapshotEntryResetStrategy) {
+        this.snapshotEntryResetStrategy = snapshotEntryResetStrategy;
+    }
+
+    public void setMaxBatchAppendIntervalMs(int maxBatchAppendIntervalMs) {
+        this.maxBatchAppendIntervalMs = maxBatchAppendIntervalMs;
+    }
+
+    public int getResetSnapshotEntriesDelayTime() {
+        return resetSnapshotEntriesDelayTime;
+    }
+
+    public void setResetSnapshotEntriesDelayTime(int resetSnapshotEntriesDelayTime) {
+        this.resetSnapshotEntriesDelayTime = resetSnapshotEntriesDelayTime;
+    }
+
+    public int getResetSnapshotEntriesButKeepLastEntriesNum() {
+        return resetSnapshotEntriesButKeepLastEntriesNum;
+    }
+
+    public void setResetSnapshotEntriesButKeepLastEntriesNum(int resetSnapshotEntriesButKeepLastEntriesNum) {
+        this.resetSnapshotEntriesButKeepLastEntriesNum = resetSnapshotEntriesButKeepLastEntriesNum;
+    }
+
+    public boolean isEnableFastAdvanceCommitIndex() {
+        return enableFastAdvanceCommitIndex;
+    }
+
+    public void setEnableFastAdvanceCommitIndex(boolean enableFastAdvanceCommitIndex) {
+        this.enableFastAdvanceCommitIndex = enableFastAdvanceCommitIndex;
+    }
+
+    public void setMetricsExporterType(MetricsExporterType metricsExporterType) {
+        this.metricsExporterType = metricsExporterType;
+    }
+
+    public MetricsExporterType getMetricsExporterType() {
+        return metricsExporterType;
+    }
+
+    public void setMetricsGrpcExporterTarget(String metricsGrpcExporterTarget) {
+        this.metricsGrpcExporterTarget = metricsGrpcExporterTarget;
+    }
+
+    public void setMetricsGrpcExporterHeader(String metricsGrpcExporterHeader) {
+        this.metricsGrpcExporterHeader = metricsGrpcExporterHeader;
+    }
+
+    public void setMetricGrpcExporterTimeOutInMills(long metricGrpcExporterTimeOutInMills) {
+        this.metricGrpcExporterTimeOutInMills = metricGrpcExporterTimeOutInMills;
+    }
+
+    public void setMetricGrpcExporterIntervalInMills(long metricGrpcExporterIntervalInMills) {
+        this.metricGrpcExporterIntervalInMills = metricGrpcExporterIntervalInMills;
+    }
+
+    public void setMetricLoggingExporterIntervalInMills(long metricLoggingExporterIntervalInMills) {
+        this.metricLoggingExporterIntervalInMills = metricLoggingExporterIntervalInMills;
+    }
+
+    public void setMetricsPromExporterPort(int metricsPromExporterPort) {
+        this.metricsPromExporterPort = metricsPromExporterPort;
+    }
+
+    public void setMetricsPromExporterHost(String metricsPromExporterHost) {
+        this.metricsPromExporterHost = metricsPromExporterHost;
+    }
+
+    public String getMetricsGrpcExporterTarget() {
+        return metricsGrpcExporterTarget;
+    }
+
+    public String getMetricsGrpcExporterHeader() {
+        return metricsGrpcExporterHeader;
+    }
+
+    public long getMetricGrpcExporterTimeOutInMills() {
+        return metricGrpcExporterTimeOutInMills;
+    }
+
+    public long getMetricGrpcExporterIntervalInMills() {
+        return metricGrpcExporterIntervalInMills;
+    }
+
+    public long getMetricLoggingExporterIntervalInMills() {
+        return metricLoggingExporterIntervalInMills;
+    }
+
+    public int getMetricsPromExporterPort() {
+        return metricsPromExporterPort;
+    }
+
+    public String getMetricsPromExporterHost() {
+        return metricsPromExporterHost;
     }
 }

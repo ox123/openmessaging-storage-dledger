@@ -16,6 +16,9 @@
 
 package io.openmessaging.storage.dledger.statemachine;
 
+import io.openmessaging.storage.dledger.common.Status;
+import io.openmessaging.storage.dledger.common.WriteClosure;
+import io.openmessaging.storage.dledger.common.WriteTask;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
@@ -45,8 +48,16 @@ import io.openmessaging.storage.dledger.entry.DLedgerEntry;
 import io.openmessaging.storage.dledger.utils.Pair;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class StateMachineCallerTest extends ServerTestHarness {
+
+    public static final String STORE_PATH = FileTestUtil.createTestDir("StateMachineCallerTest");
+
+    @Override
+    protected String getBaseDir() {
+        return STORE_PATH;
+    }
 
     private DLedgerConfig config;
 
@@ -92,6 +103,7 @@ class StateMachineCallerTest extends ServerTestHarness {
         final Pair<StateMachineCaller, MockStateMachine> result = mockCaller(dLedgerServer);
         final StateMachineCaller caller = result.getKey();
         final MockStateMachine fsm = result.getValue();
+        final MemberState memberState = dLedgerServer.getMemberState();
 
         final long lastIncludedIndex = 10;
         String snapshotStoreBasePath = this.config.getSnapshotStoreBaseDir() + File.separator + SnapshotManager.SNAPSHOT_DIR_PREFIX + lastIncludedIndex;
@@ -119,7 +131,7 @@ class StateMachineCallerTest extends ServerTestHarness {
             }
         });
         latch.await();
-        assertEquals(caller.getLastAppliedIndex(), 10);
+        assertEquals(memberState.getAppliedIndex(), 10);
         assertEquals(fsm.getTotalEntries(), 90);
         caller.shutdown();
     }
@@ -127,7 +139,7 @@ class StateMachineCallerTest extends ServerTestHarness {
     private DLedgerServer createDLedgerServerInStateMachineMode(String group, String peers, String selfId, String leaderId) {
         this.config = new DLedgerConfig();
         this.config.group(group).selfId(selfId).peers(peers);
-        this.config.setStoreBaseDir(FileTestUtil.TEST_BASE + File.separator + group);
+        this.config.setStoreBaseDir(STORE_PATH + File.separator + group);
         this.config.setSnapshotThreshold(0);
         this.config.setStoreType(DLedgerConfig.FILE);
         this.config.setMappedFileSizeForEntryData(10 * 1024 * 1024);
@@ -167,14 +179,50 @@ class StateMachineCallerTest extends ServerTestHarness {
             DLedgerEntry resEntry = fileStore.appendAsLeader(entry);
             assertEquals(i, resEntry.getIndex());
         }
-        fileStore.updateCommittedIndex(memberState.currTerm(), entryNum - 1);
+        //fileStore.updateCommittedIndex(memberState.currTerm(), entryNum - 1);
         while (fileStore.getFlushPos() != fileStore.getWritePos()) {
             fileStore.flush();
         }
     }
 
     @Test
-    public void testServerWithStateMachine() throws InterruptedException {
+    public void testSingleServerWithStateMachine() throws Exception {
+        String group = UUID.randomUUID().toString();
+        String peers = String.format("n0-localhost:%d", nextPort());
+        DLedgerServer server = launchServerWithStateMachineDisableSnapshot(group, peers, "n0", "n0", DLedgerConfig.FILE, 10 * 1024 * 1024, new MockStateMachine());
+        CountDownLatch latch = new CountDownLatch(10);
+        for (int i = 0; i < 10; i++) {
+            WriteTask task = new WriteTask();
+            task.setBody(("hello" + i).getBytes());
+            final int index = i;
+            server.handleWrite(task, new WriteClosure() {
+                long totalEntries = -1;
+                @Override
+                public void setResp(Object o) {
+                    totalEntries = (long) o;
+                }
+
+                @Override
+                public Object getResp() {
+                    return totalEntries;
+                }
+
+                @Override
+                public void done(Status status) {
+                    assertTrue(status.isOk());
+                    assertEquals(totalEntries, index + 1);
+                    latch.countDown();
+                }
+            });
+        }
+        latch.await();
+        MockStateMachine machine = (MockStateMachine) server.getStateMachine();
+        assertEquals(10, machine.getTotalEntries());
+        assertEquals(9, machine.getAppliedIndex());
+    }
+
+    @Test
+    public void testThreeServerWithStateMachine() throws InterruptedException {
         String group = UUID.randomUUID().toString();
         String peers = String.format("n0-localhost:%d;n1-localhost:%d;n2-localhost:%d", nextPort(), nextPort(), nextPort());
         DLedgerServer dLedgerServer0 = launchServerWithStateMachineEnableSnapshot(group, peers, "n0", "n1", DLedgerConfig.FILE, 0, 10 * 1024 * 1024, new MockStateMachine());
@@ -194,7 +242,7 @@ class StateMachineCallerTest extends ServerTestHarness {
             assertEquals(DLedgerResponseCode.SUCCESS.getCode(), appendEntryResponse.getCode());
             assertEquals(i, appendEntryResponse.getIndex());
         }
-        Thread.sleep(1200);
+        Thread.sleep(5000);
         for (DLedgerServer server : serverList) {
             assertEquals(9, server.getdLedgerStore().getLedgerEndIndex());
         }

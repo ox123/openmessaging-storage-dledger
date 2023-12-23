@@ -13,3 +13,7 @@ devenv
 !LICENSE-BIN
 .DS_Store
 nohup.out
+*.gz
+dledger-example.jar
+.clj-kondo
+*.lsp

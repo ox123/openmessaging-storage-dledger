@@ -18,9 +18,11 @@ package io.openmessaging.storage.dledger.statemachine;
 
 import io.openmessaging.storage.dledger.DLedgerEntryPusher;
 import io.openmessaging.storage.dledger.DLedgerServer;
-import io.openmessaging.storage.dledger.ShutdownAbleThread;
+import io.openmessaging.storage.dledger.MemberState;
+import io.openmessaging.storage.dledger.common.ShutdownAbleThread;
 import io.openmessaging.storage.dledger.entry.DLedgerEntry;
 import io.openmessaging.storage.dledger.exception.DLedgerException;
+import io.openmessaging.storage.dledger.metrics.DLedgerMetricsManager;
 import io.openmessaging.storage.dledger.snapshot.SnapshotManager;
 import io.openmessaging.storage.dledger.snapshot.SnapshotReader;
 import io.openmessaging.storage.dledger.snapshot.SnapshotStatus;
@@ -31,6 +33,7 @@ import io.openmessaging.storage.dledger.snapshot.hook.SaveSnapshotHook;
 import io.openmessaging.storage.dledger.snapshot.hook.SnapshotHook;
 import io.openmessaging.storage.dledger.store.DLedgerStore;
 
+import io.opentelemetry.api.common.Attributes;
 import java.io.IOException;
 import java.util.Optional;
 import java.util.concurrent.BlockingQueue;
@@ -39,8 +42,8 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
+import org.apache.commons.lang3.time.StopWatch;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -75,9 +78,8 @@ public class StateMachineCaller extends ShutdownAbleThread {
     private final DLedgerStore dLedgerStore;
     private final StateMachine statemachine;
     private final DLedgerEntryPusher entryPusher;
-    private final AtomicLong lastAppliedIndex;
-    private long lastAppliedTerm;
-    private final AtomicLong applyingIndex;
+
+    private final MemberState memberState;
     private final BlockingQueue<ApplyTask> taskQueue;
     private final ScheduledExecutorService scheduledExecutorService = Executors
         .newSingleThreadScheduledExecutor(new ThreadFactory() {
@@ -86,23 +88,23 @@ public class StateMachineCaller extends ShutdownAbleThread {
                 return new Thread(r, "RetryOnCommittedScheduledThread");
             }
         });
-    private final Function<Long, Boolean> completeEntryCallback;
+    private final Function<ApplyEntry, Boolean> completeEntryCallback;
     private volatile DLedgerException error;
     private Optional<SnapshotManager> snapshotManager;
 
     public StateMachineCaller(final DLedgerStore dLedgerStore, final StateMachine statemachine,
         final DLedgerEntryPusher entryPusher) {
-        super(StateMachineCaller.class.getName(), logger);
+        super("StateMachineCaller-" + dLedgerStore.getMemberState().getSelfId(), logger);
         this.dLedgerStore = dLedgerStore;
         this.statemachine = statemachine;
         this.entryPusher = entryPusher;
-        this.lastAppliedIndex = new AtomicLong(-1);
-        this.applyingIndex = new AtomicLong(-1);
+        this.memberState = dLedgerStore.getMemberState();
         this.taskQueue = new LinkedBlockingQueue<>(1024);
         if (entryPusher != null) {
             this.completeEntryCallback = entryPusher::completeResponseFuture;
+            entryPusher.registerStateMachine(this);
         } else {
-            this.completeEntryCallback = index -> true;
+            this.completeEntryCallback = entry -> true;
         }
         this.snapshotManager = Optional.empty();
     }
@@ -116,7 +118,7 @@ public class StateMachineCaller extends ShutdownAbleThread {
     }
 
     public boolean onCommitted(final long committedIndex) {
-        if (committedIndex <= this.lastAppliedIndex.get())
+        if (committedIndex <= this.memberState.getAppliedIndex())
             return false;
         final ApplyTask task = new ApplyTask();
         task.type = TaskType.COMMITTED;
@@ -172,37 +174,36 @@ public class StateMachineCaller extends ShutdownAbleThread {
         if (this.error != null) {
             return;
         }
+        final long lastAppliedIndex = this.memberState.getAppliedIndex();
+        if (lastAppliedIndex >= committedIndex) {
+            return;
+        }
         if (this.snapshotManager.isPresent() && (this.snapshotManager.get().isLoadingSnapshot() || this.snapshotManager.get().isSavingSnapshot())) {
             this.scheduledExecutorService.schedule(() -> {
                 try {
                     onCommitted(committedIndex);
-                    logger.info("Still loading or saving snapshot, retry the commit task later");
+                    logger.info("Still loading or saving snapshot, retry the commit task with index: {} later", committedIndex);
                 } catch (Throwable e) {
                     e.printStackTrace();
                 }
             }, RETRY_ON_COMMITTED_DELAY, TimeUnit.MILLISECONDS);
             return;
         }
-        final long lastAppliedIndex = this.lastAppliedIndex.get();
-        if (lastAppliedIndex >= committedIndex) {
-            return;
-        }
-        final CommittedEntryIterator iter = new CommittedEntryIterator(this.dLedgerStore, committedIndex, this.applyingIndex, lastAppliedIndex, this.completeEntryCallback);
-        while (iter.hasNext()) {
-            this.statemachine.onApply(iter);
-        }
+        final ApplyEntryIterator iter = new ApplyEntryIterator(this.dLedgerStore, committedIndex, lastAppliedIndex, this.completeEntryCallback);
+        StopWatch watch = StopWatch.createStarted();
+        this.statemachine.onApply(iter);
+        Attributes attributes = DLedgerMetricsManager.newAttributesBuilder().build();
+        DLedgerMetricsManager.applyTaskLatency.record(watch.getTime(TimeUnit.MICROSECONDS), attributes);
         final long lastIndex = iter.getIndex();
-        this.lastAppliedIndex.set(lastIndex);
-        final DLedgerEntry dLedgerEntry = this.dLedgerStore.get(lastIndex);
-        if (dLedgerEntry != null) {
-            this.lastAppliedTerm = dLedgerEntry.getTerm();
-        }
+        DLedgerMetricsManager.applyTaskBatchCount.record(lastIndex - lastAppliedIndex, attributes);
+        DLedgerEntry entry = this.dLedgerStore.get(lastIndex);
+        this.memberState.updateAppliedIndexAndTerm(lastIndex, entry.getTerm());
         // Take snapshot
-        snapshotManager.ifPresent(x -> x.saveSnapshot(dLedgerEntry));
+        snapshotManager.ifPresent(x -> x.saveSnapshot());
         // Check response timeout.
         if (iter.getCompleteAckNums() == 0) {
             if (this.entryPusher != null) {
-                this.entryPusher.checkResponseFuturesTimeout(this.lastAppliedIndex.get() + 1);
+                this.entryPusher.checkResponseFuturesTimeout(this.memberState.getAppliedIndex() + 1);
             }
         }
     }
@@ -226,11 +227,12 @@ public class StateMachineCaller extends ShutdownAbleThread {
         // Compare snapshot meta with the last applied index and term
         long snapshotIndex = snapshotMeta.getLastIncludedIndex();
         long snapshotTerm = snapshotMeta.getLastIncludedTerm();
-        if (lastAppliedCompareToSnapshot(snapshotIndex, snapshotTerm) > 0) {
+        if (snapshotIndex <= this.memberState.getAppliedIndex()) {
             logger.warn("The snapshot loading is expired");
             loadSnapshotAfter.doCallBack(SnapshotStatus.EXPIRED);
             return;
         }
+        StopWatch watch = StopWatch.createStarted();
         // Load data from the state machine
         try {
             if (!this.statemachine.onSnapshotLoad(reader)) {
@@ -243,31 +245,22 @@ public class StateMachineCaller extends ShutdownAbleThread {
             loadSnapshotAfter.doCallBack(SnapshotStatus.FAIL);
             return;
         }
+        DLedgerMetricsManager.loadSnapshotLatency.record(watch.getTime(TimeUnit.MICROSECONDS), DLedgerMetricsManager.newAttributesBuilder().build());
         // Update statemachine info
-        this.lastAppliedIndex.set(snapshotMeta.getLastIncludedIndex());
-        this.lastAppliedTerm = snapshotMeta.getLastIncludedTerm();
+        this.memberState.updateAppliedIndexAndTerm(snapshotIndex, snapshotTerm);
+        this.memberState.leaderUpdateCommittedIndex(snapshotTerm, snapshotIndex);
         loadSnapshotAfter.registerSnapshotMeta(snapshotMeta);
         loadSnapshotAfter.doCallBack(SnapshotStatus.SUCCESS);
     }
 
-    private int lastAppliedCompareToSnapshot(long snapshotIndex, long snapshotTerm) {
-        // 1. Compare term 2. Compare index
-        int res = Long.compare(this.lastAppliedTerm, snapshotTerm);
-        if (res == 0) {
-            return Long.compare(this.lastAppliedIndex.get(), snapshotIndex);
-        } else {
-            return res;
-        }
-    }
-
     private void doSnapshotSave(SaveSnapshotHook saveSnapshotAfter) {
         // Build and save snapshot meta
-        DLedgerEntry curEntry = saveSnapshotAfter.getSnapshotEntry();
-        saveSnapshotAfter.registerSnapshotMeta(new SnapshotMeta(curEntry.getIndex(), curEntry.getTerm()));
+        saveSnapshotAfter.registerSnapshotMeta(new SnapshotMeta(this.memberState.getAppliedIndex(), this.memberState.getAppliedTerm()));
         SnapshotWriter writer = saveSnapshotAfter.getSnapshotWriter();
         if (writer == null) {
             return;
         }
+        StopWatch watch = StopWatch.createStarted();
         // Save data through the state machine
         try {
             if (!this.statemachine.onSnapshotSave(writer)) {
@@ -280,6 +273,7 @@ public class StateMachineCaller extends ShutdownAbleThread {
             saveSnapshotAfter.doCallBack(SnapshotStatus.FAIL);
             return;
         }
+        DLedgerMetricsManager.saveSnapshotLatency.record(watch.getTime(TimeUnit.MICROSECONDS), DLedgerMetricsManager.newAttributesBuilder().build());
         saveSnapshotAfter.doCallBack(SnapshotStatus.SUCCESS);
     }
 
@@ -291,14 +285,6 @@ public class StateMachineCaller extends ShutdownAbleThread {
         if (server != null) {
             server.shutdown();
         }
-    }
-
-    public Long getLastAppliedIndex() {
-        return this.lastAppliedIndex.get();
-    }
-
-    public long getLastAppliedTerm() {
-        return lastAppliedTerm;
     }
 
     public void registerSnapshotManager(SnapshotManager snapshotManager) {

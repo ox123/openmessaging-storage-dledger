@@ -19,6 +19,7 @@ package io.openmessaging.storage.dledger;
 import io.openmessaging.storage.dledger.protocol.AppendEntryRequest;
 import io.openmessaging.storage.dledger.protocol.AppendEntryResponse;
 import io.openmessaging.storage.dledger.protocol.DLedgerResponseCode;
+import io.openmessaging.storage.dledger.util.FileTestUtil;
 import io.openmessaging.storage.dledger.utils.DLedgerUtils;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
@@ -30,10 +31,18 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 public class LeaderElectorTest extends ServerTestHarness {
 
+    public static final String STORE_PATH = FileTestUtil.createTestDir("LeaderElectorTest");
+
+    @Override
+    protected String getBaseDir() {
+        return STORE_PATH;
+    }
+
     @Test
     public void testSingleServer() throws Exception {
         String group = UUID.randomUUID().toString();
-        DLedgerServer dLedgerServer = launchServer(group, String.format("n0-localhost:%d", nextPort()), "n0");
+        String peers = String.format("n0-localhost:%d", nextPort());
+        DLedgerServer dLedgerServer = launchServer(group, peers, "n0");
         MemberState memberState = dLedgerServer.getMemberState();
         Thread.sleep(1000);
         Assertions.assertTrue(memberState.isLeader());
@@ -47,7 +56,7 @@ public class LeaderElectorTest extends ServerTestHarness {
         }
         long term = memberState.currTerm();
         dLedgerServer.shutdown();
-        dLedgerServer = launchServer(group, "n0-localhost:10011", "n0");
+        dLedgerServer = launchServer(group, peers, "n0");
         memberState = dLedgerServer.getMemberState();
         Thread.sleep(1000);
         Assertions.assertTrue(memberState.isLeader());
@@ -128,8 +137,8 @@ public class LeaderElectorTest extends ServerTestHarness {
             server.shutdown();
             server = launchServer(group, peers, followerId);
             Thread.sleep(2000);
-            Assertions.assertTrue(server.getMemberState().isFollower());
-            Assertions.assertTrue(leaderServer.getMemberState().isLeader());
+            Assertions.assertEquals(MemberState.Role.FOLLOWER, server.getMemberState().getRole());
+            Assertions.assertEquals(MemberState.Role.LEADER, leaderServer.getMemberState().getRole());
             Assertions.assertEquals(term, server.getMemberState().currTerm());
         }
     }
@@ -166,7 +175,7 @@ public class LeaderElectorTest extends ServerTestHarness {
             }
         }
         start = System.currentTimeMillis();
-        while (parseServers(leftServers, leaderNum, followerNum) == null && DLedgerUtils.elapsed(start) < 3 * leaderServer.getDLedgerConfig().getHeartBeatTimeIntervalMs()) {
+        while (parseServers(leftServers, leaderNum, followerNum) == null && DLedgerUtils.elapsed(start) < 5 * leaderServer.getDLedgerConfig().getHeartBeatTimeIntervalMs()) {
             Thread.sleep(100);
         }
         Thread.sleep(1000);
